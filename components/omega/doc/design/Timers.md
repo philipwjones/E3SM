@@ -41,13 +41,16 @@ location in the code. When reporting, it is desirable to
 format timer output with indentation reflecting the level of
 the call tree where the timer is called.
 
-### 2.5 Requirement: E3SM compatibility
+### 2.5 Requirement: Output and E3SM compatibility
 
-We require timer output to match other E3SM timer output
-so that existing performance tools can parse the output
-together with other E3SM components. For consistency, we
-may also wish to support the General Purpose Timing
-Library (GPTL) as a timer option.
+We require timer output to be compatible with existing
+E3SM performance tools. Output in other common formats
+for performance tools is also desired. Output in
+human-readable form is also required and it is often useful
+for at least a summary profile in readable form be
+included in the Log file output.  For consistency with
+other E3SM components, we may wish to support the General
+Purpose Timing Library (GPTL) as a timer option.
 
 ### 2.6 Requirement: Full coverage
 
