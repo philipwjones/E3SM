@@ -1,114 +1,50 @@
 (omega-dev-metadata)=
 
-# Metadata
+## Metadata
 
-## MetaData Code Structure
+The MetaData classes in OMEGA manage and manipulate metadata attached to
+all fields as well as global metadata that apply to the code or current
+simulation/experiment. Additional metadata is required to define dimensions
+for array fields. Metadata groups create a shortcut for referring to sets of
+fields that are commonly grouped together and reduce the size of contents
+lists in IOStreams. There are three classes used to create, retrieve and
+manipulate metadata. To use these classes, you must include the `MetaData.h`
+header file.
 
-The MetaData feature in Ometa is constructed using four distinct C++ classes.
-These classes are designed to facilitate the organization and retrieval of
-metadata throughout the Omega source code.
+### MetaData Class
 
-### Class Descriptions
+The MetaData class is the main class for defining fields and creating
+metadata. The class stores the name of the field, the dimension information
+(for array fields) and a `std::map` of (name, value) pairs for all metadata.
 
-#### 1. MetaData Class
-- **Purpose**: Serves as the central class, holding key-value pair metadata
-               for variables and other entities such as Ometa code or
-               the model itself.
-- **Structure**: Contains a static member that maintains references to all
-               instances of the class, allowing for universal access
-               throughout the codebase.
-
-#### 2. MetaDim Class
-- **Purpose**: Provides a structured representation of dimension information,
-               primarily for array-type entities.
-- **Structure**: Defines dimension-related attributes and functionalities to
-               aid in handling array data.
-
-#### 3. MetaGroup Class
-- **Purpose**: Offers a mechanism to aggregate certain MetaData instances for
-               streamlined management and retrieval.
-- **Structure**: Facilitates grouping and accessing grouped metadata,
-               enhancing organization and accessibility.
-
-#### 4. ArrayMetaData Class
-- **Purpose**: Specializes the MetaData class to handle array-type variables
-               specifically, ensuring that required metadata is consistently
-               provided.
-- **Structure**: Inherits from MetaData and introduces additional constraints
-               and functionalities pertinent to array-type data.
-
-## Function Naming Convention
-The naming of functions within these classes adheres to the LLVM coding style
-and is categorized based on the nature of the operation and the type of member
-variables they interact with. Function names begin with a lowercase letter.
-
-### Specific Conventions
-- **Static Member Access**: Functions interacting with static members are
-               typically short verbs. For instance, `get("Name");` is utilized
-               to instantiate a MetaData class.
-- **Non-Static Member Access**: Functions dealing with non-static members often
-               conclude with a specific descriptor indicating the targeted
-               information, e.g., `getEntry("Name", Var);` retrieves
-               metadata from a MetaData instance.
-- **Instance Management**: The terms `create/destroy` are designated for
-               functions that instantiate or delete an instance, respectively.
-- **Instance Retrieval**: The `get` function is employed to obtain an instance
-               from the static member holding all instances.
-- **Existence Check**: The `has("Name");` function returns a boolean value,
-               indicating whether an instance named "Name" exists.
-
-## Return Type and Return Code
-
-The create and get static functions are designed to return a `shared_ptr` of
-the class instance. This design choice simplifies the usage and enhances
-code readability by allowing the use of the auto keyword, eliminating the
-need for repeatedly specifying the `shared_ptr` type.
-
-Other Functions typically returns an integer code indicating the operation
-status representing a successful operation with no errors. Negative Values
-correspond to specific error cases, each value indicating a distinct error
-type.
-
-## Inheriting MetaData class
-
-The MetaData class is a versatile construct intended for attaching metadata
-not only to model variables but also to other elements related to the model
-and code. It serves as a foundational class for metadata management.
-
-The ArrayMetaData class is a specialized version of the MetaData class,
-focusing specifically on array-type model variables. It defines a singular
-method, `create`, which is an overridden version of the one in the MetaData
-class. The create function in ArrayMetaData is tailored to ensure that all
-necessary metadata for array-type variables is provided upon creation.
-This enforcement guarantees the integrity and completeness of metadata
-for array-type model variables.
-
-## Create/Destroy a MetaData Instance
-
-To add or retrieve metadata for a variable or other entity such as code or
-a model, users have to create a MetaData instance for the variable or entity.
-
-There are three ways to create a MetaData Instance. The simplest way is to use
-the create method with a metadata name string:
-
+For most array-based fields in OMEGA, there is a create function
+to define a field and ensure that all required metadata is included:
+``` c++
+   auto MyMeta = MetaData::create(
+          const std::string Name,        ///< [in] Name of variable/field
+          const std::string Description, ///< [in] long Name or description
+          const std::string Units,       ///< [in] units
+          const std::string StdName,     ///< [in] CF standard Name
+          const std::any ValidMin,       ///< [in] min valid field value
+          const std::any ValidMax,       ///< [in] max valid field value
+          const std::any FillValue,      ///< [in] scalar for undefined entries
+          const int NumDims,             ///< [in] number of dimensions
+          const std::vector<std::string> Dimensions ///< dim names for each dim
+   );
 ```
-auto Data1 = MetaData::create("MyVar1");
-
+MyMeta is actually a `std::shared_ptr` to the defined metadata so all member
+functions are referenced using `MyMeta->functionName`.
+If a field of that name already exists, an error message is generated and
+the pointer is set to nullptr.
+For global metadata not attached to a particular field, we provide two standard
+field names `CodeMeta` and `SimMeta`. These and other non-array fields
+can be created using the functions:
+```c++
+   auto MyMeta = MetaData::create(Name);
 ```
-
-The create method is a static function that returns a C++ `shared_ptr` object
-pointing to the MetaData instance named "MyVar1".
-
-If the specified name already exists, a runtime error is thrown.
-
-Once it is created successfully, users can add metadata later, as explained
-in the section below.
-
-Another way to create a MetaData Instance is to use the create function with
-`std::make_pair`, consisting of name-value pairs:
-
-```
-auto Data2 = MetaData::create(
+or
+```c++
+   auto Data2 = MetaData::create(
                 "MyVar2",
                 {
                     std::make_pair("Meta1", 1),
@@ -117,193 +53,175 @@ auto Data2 = MetaData::create(
                 }
             );
 ```
-This allows multiple key-value pairs to be added at once during creation.
+The second form allows multiple key-value pairs to be added at once during
+creation. All create methods add the field and metadata to a list of all
+defined fields and also perform checks to ensure no duplicate fields are
+created. Fields can later be retrieved by name.
 
-In the case of an array-type variable, it is mandatory to add a certain set
-of key-value pairs. Therefore, users should use the following method to create
-array-type variables:
+Once defined, additional metadata pairs can be added or removed using:
+```c++
+   int Err = MyMeta->addEntry(Name, Value);
 
+   int Err = MyMeta->removeEntry(Name);
 ```
-    auto Data3 = ArrayMetaData::create(
-                    "MyVar3",
-                    "Description", /// long Name or description
-                    "Units",       /// units
-                    "StdName",     /// CF standard Name
-                    std::numeric_limits<int>::min(), /// min valid value
-                    std::numeric_limits<int>::max(), /// max valid value
-                    FILL_VALUE,    /// scalar used for undefined entries
-                    1,             /// number of dimensions
-                    Dimensions     /// dim pointers
-            );
+Note that internally the `std::any` type is used to simplify the storage
+and reduce the number of interfaces. So the Value must be a standard supported
+data type (I4, I8, R4, R8, bool, std::string). When retrieving the data,
+the `std::any` is coerced to the appropriate data type.
+
+There are multiple mechanisms for retrieving metadata. To retrieve a pointer
+to the full metadata instance associated with a field, use:
+```c++
+   auto MyMeta = get(Name);
 ```
-
-The `destroy` function, used with the metadata name, removes a MetaData
-instance so that the instance can no longer be accessed.
-
+Individual metadata entries can then be retrieved using:
+```c++
+   int Err = MyMeta->getEntry("EntryName", Value);
 ```
-int ret;
-ret = MetaData::destroy("MyVar3");
-```
-The return value of the `destroy` function is zero on success, -1 when there
-is no metadata by that name, and -2 when the destroy action fails for
-other reasons.
-
-## Add/Remove a Metadata to/from a MetaData Instance
-
-To add metadata to a `MetaData` instance, the `addEntry` function is used:
-
-```
-    int ret;
-    const R8 AValue = 2.0;
-    ret = Data1->addEntry("NewMeta", AValue);
+The getEntry function is overloaded for all supported OMEGA data types
+(I4, I8, R4, R8, bool, std::string) and the `getEntry` function will attempt
+to coerce the entry to the type associated with Value in the argument list.
+The entire `std::map` of all entries can be retrieved with:
+```c++
+   std::map<std::string, std::any> *AllEntries = MyMeta->getAllEntries();
 ```
 
-The following data types are allowed as metadata values:
+For array fields, the dimension information can also be extracted from
+the MetaData using:
+```c++
+   int NumDims = MyMeta->getNumDims();
 
-- I4
-- I8
-- R4
-- R8
-- std::string
-- bool
-
-`addEntry` returns an integer value of zero upon success and returns -1
-if the metadata name already exists.
-
-To remove metadata from a MetaData instance, the `removeEntry` function
-is used.
-
+   std::vector<std::string> DimNames(NumDims);
+   int Err = getDimNames(DimNames);
 ```
-    int ret;
-    ret = Data1->removeEntry("NewMeta");
+The dimension name vector stores the dimension names in the same index order
+of the array itself. Once the list of dimension names has been retrieved
+the dimension query functions listed below can be used to get the length.
+
+To check whether a field has been defined or whether an entry already
+exists, use the `has` functions:
+```c++
+   bool MetaExists = MetaData::has(FieldName);
+
+   bool EntryExists = MyMeta->hasEntry(Name);
 ```
+These functions can be used within a conditional.
 
-`removeEntry` returns an integer value of zero upon success, -1 when there
-is no metadata by that name, and -2 when the removal action fails for other
-reasons.
-
-## Retreive a Metadata from a MetaData Instance
-
-Users can retrieve metadata using the `getEntry` function.
-
+Finally, there are functions to remove a defined field:
+```c++
+   int Err = MyMeta->destroy(FieldName);
 ```
-    R8 R8Value;
-    ret = Data1->getEntry("NewMeta", R8Value);
+or remove all defined fields and metadata (typically before the code exits):
+```c++
+   MetaData::clear();
 ```
 
-The first argument of `getEntry` is the name of the metadata. The second
-argument is passed by reference, allowing `getEntry` to place
-the metadata's value into it.
+### MetaGroup class
 
-Note that `getEntry` is overloaded with several methods, each having
-different data types for the second argument. It is the user's responsibility
-to match the metadata name with the correct data type of the value. Otherwise,
-the function may throw a type-casting error exception.
+To group metadata fields together, we provide a MetaGroup class. A group
+can be defined as a list of member fields. Fields can be members of more
+than one group. The group name simply provides a shortcut for referring to
+fields that are commonly grouped together. A class instance contains the
+name of the group, a list of fields stored as a sorted list using the
+`std::set` container. The class also tracks and manages a list of all groups
+that have been defined.
 
-## Retreive a MetaData Instance
-
-To retrieve an instance of MetaData for a variable or another entity, such
-as code, the `get` static function can be used.
-
+To create a group, first create an empty group with a given name using:
+```c++
+   auto MyGroup = MetaGroup::create(Name);
 ```
-    auto Data4 = MetaData::get("MyVar2");
+As in the MetaData class, a shared pointer to the group is returned so member
+functions are called using the form `MyGroup->function()`
+
+Once the group has been created, add fields by name using:
+```c++
+   int Err = MyGroup->addField(Name);
 ```
-
-The `get` method is a static function that returns a C++ `shared_ptr` object
-in the same way as the create function.
-
-## Create/Destroy a MetaDim Instance
-
-In the above example for array-type variables, users need to add metadata for
-the dimension information of the variable. In Omega, the `MetaDim` class is
-used for representing dimensions.
-
-The `create` function returns a C++ `shared_ptr` object to the MetaDim
-instance.
-
-```
-const I4 DimLength{3};
-auto Dim1 = MetaDim::create("MyDim1", DimLength);
-int ret   = MetaDim::destroy("MyDim1");
+The field with the given name should have already been defined before adding
+to a group.
+If necessary, fields can later be removed from a group using:
+```c++
+   int Err = MyGroup->removeField(Name);
 ```
 
-In case the specified name already exists, a runtime error is thrown.
+The existence of a group or a field within a group can be checked using:
+```c++
+   bool GroupExists = MetaGroup::has(Name);
 
-## Retreive Dimension from a MetaDim Instance
-
-Users can retrieve dimension information using `getLength`.
-
+   bool FieldIsInGroup = MyGroup->hasField(Name);
 ```
-    I4 DimLength;
-    Dim1->getLength(DimLength);
-```
-
-The argument is passed by reference, allowing `getLength` to assign the length
-value to it.
-
-As of now, the return value is always zero.
-
-## Create/Destroy a MetaGroup Instance
-
-Because lists of contents in the model configuration file can become lengthy,
-it is useful to define and maintain a metadata group. This group is essentially
-a shorthand for a set of common fields (e.g., `meshFields` or `prognosticVars`).
-Common groups of fields can be defined as metadata groups (MetaGroup). Please
-see the metadata design document for more details.
-
-Similarly to the MetaData and MetaDim classes explained above, the create
-function returns a C++ `shared_ptr` object to the MetaGroup instance.
-
-```
-auto Group1 = MetaGroup::create("MyGroup1");
-int ret     = MetaGroup::destroy("MyGroup1");
+A list of names for all fields in a group is available with:
+```c++
+   std::set<std::string> FieldList = MyGroup->getFieldList();
 ```
 
-In case the specified name already exists, a runtime error is thrown.
-
-## Add, Retrieve, or Remove a MetaData Instance from a MetaGroup Instance
-
+The group can be later retrieved by name using:
+```c++
+   auto MyGroup = MetaGroup::get(Name);
 ```
-int ret;
-const std::string FieldName{"MyField"};
-
-auto Data1  = MetaData::create(FieldName);
-
-ret         = Group1->addField(FieldName);
-auto Data2  = Group1->getField(FieldName):
-ret         = Group1->removeField(FieldName):
+and the field metadata for any group member can be retrieved using:
+```
+   auto FieldMeta = MyGroup->getField(Name);
 ```
 
-To add, retrieve, or remove a field (a MetaData instance) from
-a `MetaGroup shared_ptr`, the `addField`, `getField`, and `removeField`
-methods can be used, respectively. `addField` and `removeField` return zero
-upon success, -1 if the group already contains the field name, and -2 if
-another error occurs. `getField` throws an error if no field name is
-specified in the argument.
-
-## Utilities
-
-All the classes described here have the following static utility functions:
-
-### `has` static method
-
-This static method returns a boolean value indicating whether an instance
-specified by the argument string exists.
-
-```
-bool ret1, ret2, ret3;
-ret1    = MetaData::has("MyVar");
-ret2    = MetaDim::has("MyDim");
-ret3    = MetaGroup::has("MyGroup");
+Groups can be removed using:
+```c++
+   int Err = destroy(Name);
 ```
 
-### `get` static method
+### MetaDim Class
 
-This static method returns an instance of the class specified by
-the argument string.
+The MetaDim class stores the name and length of an array dimension. The length
+refers to the global (unpartitioned) length. Dimension metadata is required to
+properly define arrays. As in the other metadata classes, a list of all
+defined dimensions is maintained so that they can be retrieved by name later.
 
+Creating a dimension is a simple call:
+```c++
+   auto MyDim1 = MetaDim::create(Name, Length);
 ```
-auto Data   = MetaData::get("MyVar");
-auto Dim    = MetaDim::get("MyDim");
-auto Group  = MetaGroup::get("MyGroup");
+Unlike other metadata create functions, if a dimension has already been
+defined with the same name and length, the creation returns the shared pointer
+to the previously defined dimension and no new dimension is created.
+The existence of a dimension can be queried using:
+```c++
+   bool DimExists = MetaDim::has(Name);
+```
+
+A defined dimension can be retrieved by name using:
+```c++
+   auto MyDim = MetaDim::get(Name);
+```
+There are two methods to retrieve the length of a dimension. If the dimension
+has already been retrieved, the member function can be used:
+```c++
+   I4 Length = MyDim->getLength();
+```
+but the length can be retrieved without getting the dimension pointer using:
+```c++
+   I4 Length = MetaDim::getDimLength(Name);
+```
+
+In some cases, it is useful to access all the dimensions (eg to write the
+dimension metadata to a file). For this purpose, an iterator is available
+and can be used in a loop like:
+```c++
+   for (auto It = MetaDim::begin(); It != MetaDim::end(); ++It) {
+      std::string Name = It->first;
+      I4 Length = MetaDim::getDimLength(Name);
+      // Do stuff with name, length
+   }
+```
+The total number of defined dimensions can be obtained with:
+```c++
+   int TotalDims = MetaDim::getNumDefinedDims();
+```
+
+Finally, dimensions can be deleted using:
+```c++
+   int Err = MetaDim::destroy(Name);
+```
+and all dimensions can be removed with:
+```c++
+   MetaDim::clear();
 ```

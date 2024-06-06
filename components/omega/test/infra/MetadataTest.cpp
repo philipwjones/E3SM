@@ -45,17 +45,40 @@ void testMetaDim() {
                "'" + DimName + "' should exist");
 
    // test get()
-   auto Dim2 = MetaDim::get(DimName);
+   auto DimNew = MetaDim::get(DimName);
 
-   printResult(Dim1 == Dim2, true, "get() returns correct instance.",
+   printResult(Dim1 == DimNew, true, "get() returns correct instance.",
                "get() returns incorrect instance.");
 
    // test getLength()
-   I4 Length;
-   Dim1->getLength(Length);
+   I4 Length = Dim1->getLength();
 
    printResult(DimValue == Length, true, "getLength() returns correct length.",
                "getLength() returns incorrect length.");
+
+   // create more dims and test ability to loop through
+   std::vector<std::string> DimNames{"MyDim", "MyDim2", "MyDim3"};
+   std::vector<I4> DimLengths{1, 2, 200};
+   auto Dim2  = MetaDim::create(DimNames[1], DimLengths[1]);
+   auto Dim3  = MetaDim::create(DimNames[2], DimLengths[2]);
+   I4 NumDims = MetaDim::getNumDefinedDims();
+   printResult(NumDims == 3, true, "Retrieved correct number of dims",
+               "Retrieved incorrect number of dims");
+   I4 DimCount = 0;
+   I4 ErrCount = 0;
+   for (auto It = MetaDim::begin(); It != MetaDim::end(); ++It) {
+      std::string DimName = It->first;
+      Length              = MetaDim::getDimLength(DimName);
+      if (DimName != DimNames[DimCount])
+         ++ErrCount;
+      if (Length != DimLengths[DimCount])
+         ++ErrCount;
+      ++DimCount;
+   }
+   printResult(NumDims == DimCount, true, "MetaDim iterator correct count",
+               "MetaDim iterator incorrect count");
+   printResult(ErrCount == 0, true, "MetaDim iterator dereference correct",
+               "MetaDim iterator dereference incorrect");
 
    // test destroy()
    MetaDim::destroy(DimName);
@@ -63,6 +86,12 @@ void testMetaDim() {
    printResult(MetaDim::has(DimName), false,
                "'" + DimName + "' is destroyed correctly",
                "'" + DimName + "' is not destroyed");
+
+   // test clear
+   MetaDim::clear();
+   NumDims = MetaDim::getNumDefinedDims();
+   printResult(NumDims == 0, true, "MetaDim clear removed all dims",
+               "MetaDim clear did not remove all dims");
 }
 
 void testMetaData() {
@@ -114,21 +143,24 @@ void testMetaData() {
       Count++;
    }
 
-   // test create() 3
-   std::vector<std::shared_ptr<MetaDim>> Dimensions;
-   Dimensions.push_back(MetaDim::create(DimName, DimValue));
+   // test create() 3 - Array metadata
 
-   auto Data3 = ArrayMetaData::create(
-       ArrayName,
-       "Description",                   /// long Name or description
-       "Units",                         /// units
-       "StdName",                       /// CF standard Name
-       std::numeric_limits<int>::min(), /// min valid value
-       std::numeric_limits<int>::max(), /// max valid value
-       FILL_VALUE,                      /// scalar used for undefined entries
-       1,                               /// number of dimensions
-       Dimensions                       /// dim pointers
-   );
+   auto Dim1 = MetaDim::create(DimName, DimValue);
+
+   std::vector<std::string> Dimensions;
+   Dimensions.push_back(DimName);
+
+   auto Data3 =
+       MetaData::create(ArrayName,
+                        "Description", /// long Name or description
+                        "Units",       /// units
+                        "StdName",     /// CF standard Name
+                        std::numeric_limits<int>::min(), /// min valid value
+                        std::numeric_limits<int>::max(), /// max valid value
+                        FILL_VALUE, /// scalar used for undefined entries
+                        1,          /// number of dimensions
+                        Dimensions  /// dimension names
+       );
 
    printResult(MetaData::has(ArrayName), true, "'" + ArrayName + "' is created",
                "'" + ArrayName + "' should exist");
@@ -138,6 +170,30 @@ void testMetaData() {
 
    printResult(Data3 == Data4, true, "get() returns correct instance.",
                "get() returns incorrect instance.");
+
+   // Get the number of dimensions for the field
+   I4 NumDims = Data4->getNumDims();
+
+   printResult(NumDims == 1, true,
+               "MetaData.getNumDims() returns correct number of dimensions.",
+               "MetaData.getNumDims() returns incorrect number of dimensions.");
+
+   // Get the names of all dimensions
+   std::vector<std::string> DimNames;
+   ret = Data4->getDimNames(DimNames);
+   printResult(ret == 0, true, "MetaData getDimNames successfully returned.",
+               "MetaData getDimNames returned error.");
+
+   Count = 0;
+   for (int I = 0; I < NumDims; ++I) {
+      if (DimNames[I] != Dimensions[I]) {
+         LOG_ERROR("Retrived DimName {} does not match Dimension {} Index {}",
+                   DimNames[I], Dimensions[I], I);
+         ++Count;
+      }
+   }
+   printResult(Count == 0, true, "MetaData retrieved correct dimension names.",
+               "MetaData retrieved incorrect dimension names.");
 
    // test hasEntry()
    printResult(Data4->hasEntry("FillValue"), true,
@@ -186,12 +242,19 @@ void testMetaData() {
    printResult(MetaData::has(SimMeta), false,
                "'" + SimMeta + "' is correclty removed",
                "'" + SimMeta + "' is not removed.");
+
+   // test clear()
+   MetaData::clear();
+
+   printResult(MetaData::has(CodeMeta), false,
+               "MetaData clear() - CodeMeta correclty removed",
+               "MetaData clear() - CodeMeta is not removed.");
 }
 
 void testMetaGroup() {
 
    const std::string GroupName{"MyGroup"};
-   const std::string FieldName{"MyField"};
+   const std::vector<std::string> FieldNames{"MyField1", "MyField2"};
    const std::string DimName{"MyDim"};
    const I4 DimValue{1};
    int ret;
@@ -215,53 +278,52 @@ void testMetaGroup() {
                "get() returns incorrect instance.");
 
    // test hasField()
-   printResult(Group1->hasField(FieldName), false,
-               "'" + FieldName + "' is not in a group",
-               "'" + FieldName + "' is in a group");
+   printResult(Group1->hasField(FieldNames[0]), false,
+               "'" + FieldNames[0] + "' is not in a group",
+               "'" + FieldNames[0] + "' is in a group");
 
    // test addField()
-   auto Data1 = MetaData::create(FieldName);
+   auto Data1 = MetaData::create(FieldNames[0]);
+   auto Data2 = MetaData::create(FieldNames[1]);
 
-   ret = Group1->addField(FieldName);
+   ret = Group1->addField(FieldNames[0]);
 
    printResult(ret == 0, true, "addField() returns zero.",
                "addField() returns non-zero.");
 
-   printResult(Group1->hasField(FieldName), true,
-               "'" + FieldName + "' is in a group",
-               "'" + FieldName + "' is not in a group");
+   printResult(Group1->hasField(FieldNames[0]), true,
+               "'" + FieldNames[0] + "' is in a group",
+               "'" + FieldNames[0] + "' is not in a group");
 
-   std::map<std::string, std::shared_ptr<MetaData>> *Fields;
-   Fields = Group1->getAllFields();
+   // add a second field to test some retrievals
+   ret = Group1->addField(FieldNames[1]);
 
-   std::string FieldNamePart;
-   std::shared_ptr<MetaData> FieldPart;
+   std::set<std::string> Fields = Group1->getFieldList();
 
-   // use std::map functionality to loop through all fields
-   for (const auto &Pair : *Fields) {
-      FieldNamePart = Pair.first;  // retrieve field name part
-      FieldPart     = Pair.second; // retrieve field part
-
-      printResult(FieldNamePart == FieldName, true,
+   // use std::set functionality to loop through all fields
+   int FieldCount{0};
+   for (auto IField = Fields.begin(); IField != Fields.end(); ++IField) {
+      printResult(*IField == FieldNames[FieldCount], true,
                   "Correct FieldName is returned",
                   "Incorrect FieldName is returned");
+      ++FieldCount;
    }
 
    // test getField()
-   auto Data2 = Group1->getField(FieldName);
+   auto Data3 = Group1->getField(FieldNames[0]);
 
-   printResult(Data1 == Data2, true, "getField() returns correct instance.",
+   printResult(Data1 == Data3, true, "getField() returns correct instance.",
                "getField() returns incorrect instance.");
 
    // test removeField()
-   ret = Group1->removeField(FieldName);
+   ret = Group1->removeField(FieldNames[0]);
 
    printResult(ret == 0, true, "removeField() returns zero.",
                "removeField() returns non-zero.");
 
-   printResult(Group1->hasField(FieldName), false,
-               "'" + FieldName + "' is not in a group",
-               "'" + FieldName + "' is in a group");
+   printResult(Group1->hasField(FieldNames[0]), false,
+               "'" + FieldNames[0] + "' is not in a group",
+               "'" + FieldNames[0] + "' is in a group");
 
    // test destroy()
    MetaGroup::destroy(GroupName);
@@ -281,19 +343,19 @@ std::vector<std::shared_ptr<MetaDim>> initMetaDim(const std::string DimName,
 }
 
 void initMetaData(const std::string FieldName,
-                  const std::vector<std::shared_ptr<MetaDim>> Dimensions) {
+                  const std::vector<std::string> Dimensions) {
 
-   auto Data = ArrayMetaData::create(
-       FieldName,
-       "Description",                   /// long Name or description
-       "Units",                         /// units
-       "StdName",                       /// CF standard Name
-       std::numeric_limits<int>::min(), /// min valid value
-       std::numeric_limits<int>::max(), /// max valid value
-       FILL_VALUE,                      /// scalar used for undefined entries
-       1,                               /// number of dimensions
-       Dimensions                       /// dim pointers
-   );
+   auto Data =
+       MetaData::create(FieldName,
+                        "Description", /// long Name or description
+                        "Units",       /// units
+                        "StdName",     /// CF standard Name
+                        std::numeric_limits<int>::min(), /// min valid value
+                        std::numeric_limits<int>::max(), /// max valid value
+                        FILL_VALUE, /// scalar used for undefined entries
+                        1,          /// number of dimensions
+                        Dimensions  /// dim names
+       );
 }
 
 void initMetaGroup(const std::string GroupName) {
@@ -306,12 +368,14 @@ void testMetaInit() {
    const std::string GroupName{"MyInitGroup"};
    const std::string FieldName{"MyInitField"};
    const std::string DimName{"MyInitDim"};
+   std::vector<std::string> DimNames;
    const I4 DimValue{1};
    int ret;
 
    auto dimensions = initMetaDim(DimName, DimValue);
+   DimNames.push_back(DimName);
 
-   initMetaData(FieldName, dimensions);
+   initMetaData(FieldName, DimNames);
 
    initMetaGroup(GroupName);
 

@@ -29,10 +29,10 @@ int initIOFieldTest() {
    OMEGA::I4 NVertLevels = 64;
    auto CellDim          = OMEGA::MetaDim::create("NCells", NCellsSize);
    auto VertDim          = OMEGA::MetaDim::create("NVertLevels", NVertLevels);
-   std::vector<std::shared_ptr<OMEGA::MetaDim>> Dimensions{CellDim, VertDim};
+   std::vector<std::string> Dimensions{"NCells", "NVertLevels"};
 
    // Define field metadata for all fields
-   auto FieldMetaI4H = OMEGA::ArrayMetaData::create(
+   auto FieldMetaI4H = OMEGA::MetaData::create(
        "FieldI4H",
        "Test IO Field for I4 Host", /// long Name or description
        "unitless",                  /// units
@@ -44,7 +44,7 @@ int initIOFieldTest() {
        Dimensions                   /// dim pointers
    );
 
-   auto FieldMetaI4D = OMEGA::ArrayMetaData::create(
+   auto FieldMetaI4D = OMEGA::MetaData::create(
        "FieldI4D",
        "Test IO Field for I4 Device", /// long Name or description
        "unitless",                    /// units
@@ -56,7 +56,7 @@ int initIOFieldTest() {
        Dimensions                     /// dim pointers
    );
 
-   auto FieldMetaR8H = OMEGA::ArrayMetaData::create(
+   auto FieldMetaR8H = OMEGA::MetaData::create(
        "FieldR8H",
        "Test IO Field for R8 Host", /// long Name or description
        "m",                         /// units
@@ -68,7 +68,7 @@ int initIOFieldTest() {
        Dimensions                   /// dim pointers
    );
 
-   auto FieldMetaR8D = OMEGA::ArrayMetaData::create(
+   auto FieldMetaR8D = OMEGA::MetaData::create(
        "FieldR8D",
        "Test IO Field for R8 Device", /// long Name or description
        "m",                           /// units
