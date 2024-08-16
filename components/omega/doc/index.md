@@ -29,9 +29,8 @@ userGuide/Broadcast
 userGuide/Logging
 userGuide/Decomp
 userGuide/Dimension
-userGuide/MetaData
+userGuide/Field
 userGuide/IO
-userGuide/IOField
 userGuide/Halo
 userGuide/HorzMesh
 userGuide/HorzOperators
@@ -60,9 +59,8 @@ devGuide/CMakeBuild
 devGuide/Logging
 devGuide/Decomp
 devGuide/Dimension
-devGuide/MetaData
+devGuide/Field
 devGuide/IO
-devGuide/IOField
 devGuide/Halo
 devGuide/HorzMesh
 devGuide/HorzOperators

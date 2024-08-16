@@ -60,14 +60,12 @@ class LayerThicknessAuxVars {
       }
    }
 
-   void registerFields(const std::string &AuxGroupName) const;
+   void registerFields(const std::string &AuxGroupName,
+                       const std::string &MeshName) const;
    void unregisterFields() const;
 
  private:
    Array2DI4 CellsOnEdge;
-
-   void addMetaData(const std::string &AuxGroupName) const;
-   void defineIOFields() const;
 };
 
 } // namespace OMEGA
