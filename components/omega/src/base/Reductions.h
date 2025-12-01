@@ -66,27 +66,34 @@ void sumDDLocal(complex<double> &DDb, //< [inout] local sum and residual
    double T1 = DDa + real(DDb);
    double E  = T1 - DDa;
    double T2 = ((real(DDb) - E) + (DDa - (T1 - E))) + imag(DDb);
-   DDb = complex<double>(T1 + T2, T2 - ((T1 + T2) - T1));
+   DDb       = complex<double>(T1 + T2, T2 - ((T1 + T2) - T1));
 }
 
 //------------------------------------------------------------------------------
-// Special function to extract array properties and index range
+// Special functions to extract array properties and index range
+/// Determines whether a Kokkos array is on host
+template <typename T, typename ML, typename MS>
+bool isReduceArrayOnHost(
+    const Kokkos::View<T, ML, MS> Array ///< [in] array to extract info
+) {
+   // Determine where array is located
+   return Kokkos::SpaceAccessibility<MS, Kokkos::HostSpace>::accessible;
+}
+
+/// Extracts range and strides from Kokkos array
 template <typename T, typename ML, typename MS>
 void getReduceArrayInfo(
-      std::vector<I4> &IRange,             ///< [out] index range for reduction
-      size_t *Strides,                     ///< [out] array stride for each dim
-      bool IsHost,                         ///< [out] true if host array
-      const Kokkos::View<T, ML, MS> Array, ///< [in] array to extract info
-      const std::vector<I4> *IndxRange     ///< [in] input index range
+    std::vector<I4> &IRange,             ///< [out] index range for reduction
+    std::vector<I8> &Strides,            ///< [out] array stride for each dim
+    const Kokkos::View<T, ML, MS> Array, ///< [in] array to extract info
+    const std::vector<I4> *IndxRange     ///< [in] input index range
 ) {
    // Get array and layout information
    int Dim = Array.rank;
    OMEGA_REQUIRE(Dim > 0 and Dim < 6,
-      "Reductions: Array with {} dimensions not supported", Dim);
-   // Determine where array is located
-   IsHost = Kokkos::SpaceAccessibility<MS, Kokkos::HostSpace>::accessible;
+                 "Reductions: Array with {} dimensions not supported", Dim);
    // Kokkos may pad array dims so extract the actual stride used for storage
-   Array.stride(Strides);
+   Array.stride(Strides.data());
    // Strides returns non-zero stride for last dims so reset
    for (int IDim = Dim; IDim < 5; ++IDim)
       Strides[IDim] = 0;
@@ -127,6 +134,24 @@ void getReduceArrayInfo(
    }
 }
 
+/// Copies some array index info to device
+void copyReduceInfoToDevice(
+    Array1DI4 &DevRange,     ///< [out] index range for reduction
+    Array1DI8 &DevStrides,   ///< [out] array stride for each dim
+    std::vector<I4> &IRange, ///< [in] index range for reduction
+    std::vector<I8> &Strides ///< [in] array stride for each dim
+) {
+   HostArray1DI4 HostRange("IRange", 10);
+   HostArray1DI8 HostStrides("Strides", 5);
+   for (int I = 0; I < 5; ++I) {
+      HostStrides(I)       = Strides[I];
+      HostRange(2 * I)     = IRange[2 * I];
+      HostRange(2 * I + 1) = IRange[2 * I + 1];
+   }
+   DevRange   = createDeviceMirrorCopy(HostRange);
+   DevStrides = createDeviceMirrorCopy(HostStrides);
+}
+
 //------------------------------------------------------------------------------
 // Initialize the special DD sum operator for double precision reproducible sums
 void globalSumInit() {
@@ -140,8 +165,8 @@ void globalSumInit() {
 /// with the communicator.  Return value is sum across all tasks and sums are
 /// bit reproducible.
 /// I4 specific interface
-I4 globalSum(const I4 &Val,       ///< [in] local scalar value to be summed
-             const MPI_Comm Comm  ///< [in] MPI communicator
+I4 globalSum(const I4 &Val,      ///< [in] local scalar value to be summed
+             const MPI_Comm Comm ///< [in] MPI communicator
 ) {
    I4 Result;
    int Err = MPI_Allreduce(&Val, &Result, 1, MPI_INT32_T, MPI_SUM, Comm);
@@ -151,8 +176,8 @@ I4 globalSum(const I4 &Val,       ///< [in] local scalar value to be summed
 }
 
 /// I8 specific interface
-I8 globalSum(const I8 &Val,       ///< [in] local scalar value to be summed
-             const MPI_Comm Comm  ///< [in] MPI communicator
+I8 globalSum(const I8 &Val,      ///< [in] local scalar value to be summed
+             const MPI_Comm Comm ///< [in] MPI communicator
 ) {
    I8 Result;
    int Err = MPI_Allreduce(&Val, &Result, 1, MPI_INT64_T, MPI_SUM, Comm);
@@ -162,8 +187,8 @@ I8 globalSum(const I8 &Val,       ///< [in] local scalar value to be summed
 }
 
 /// R4 specific interface
-R4 globalSum(const R4 &Val,       ///< [in] local scalar value to be summed
-             const MPI_Comm Comm  ///< [in] MPI communicator
+R4 globalSum(const R4 &Val,      ///< [in] local scalar value to be summed
+             const MPI_Comm Comm ///< [in] MPI communicator
 ) {
    R8 LocalTmp, GlobalTmp;
    LocalTmp = Val; // convert to double for reproducibility
@@ -175,8 +200,8 @@ R4 globalSum(const R4 &Val,       ///< [in] local scalar value to be summed
 }
 
 /// R8 specific interface
-R8 globalSum(const R8 &Val,       ///< [in] local scalar value to be summed
-             const MPI_Comm Comm  ///< [in] MPI communicator
+R8 globalSum(const R8 &Val,      ///< [in] local scalar value to be summed
+             const MPI_Comm Comm ///< [in] MPI communicator
 ) {
    // initialize reproducible MPI_SUMDD operator
    if (R8SumNotInitialized)
@@ -188,7 +213,7 @@ R8 globalSum(const R8 &Val,       ///< [in] local scalar value to be summed
    complex<double> GlobalTmp(0.0, 0.0);
 
    int Err = MPI_Allreduce(&LocalTmp, &GlobalTmp, 1, MPI_C_DOUBLE_COMPLEX,
-                            MPI_SUMDD, Comm);
+                           MPI_SUMDD, Comm);
    if (Err != MPI_SUCCESS)
       ABORT_ERROR("globalSum (R8 scalar): Error in MPI_Allreduce");
    // Final sum is the real part of the complex pair
@@ -201,8 +226,8 @@ R8 globalSum(const R8 &Val,       ///< [in] local scalar value to be summed
 /// Return value is a vector containg the sum of each scalar across all tasks
 /// I4 specific interface
 std::vector<I4> globalSum(
-      const std::vector<I4> &Scalars, ///< [in] vector of scalars to be summed
-      const MPI_Comm Comm             ///< [in] MPI communicator
+    const std::vector<I4> &Scalars, ///< [in] vector of scalars to be summed
+    const MPI_Comm Comm             ///< [in] MPI communicator
 ) {
    int NFields = Scalars.size();
    std::vector<I4> Results(NFields);
@@ -215,8 +240,8 @@ std::vector<I4> globalSum(
 
 /// I8 specific interface
 std::vector<I8> globalSum(
-      const std::vector<I8> &Scalars, ///< [in] vector of scalars to be summed
-      const MPI_Comm Comm             ///< [in] MPI communicator
+    const std::vector<I8> &Scalars, ///< [in] vector of scalars to be summed
+    const MPI_Comm Comm             ///< [in] MPI communicator
 ) {
    int NFields = Scalars.size();
    std::vector<I8> Results(NFields);
@@ -229,8 +254,8 @@ std::vector<I8> globalSum(
 
 /// R4 specific interface
 std::vector<R4> globalSum(
-      const std::vector<R4> &Scalars, ///< [in] vector of scalars to be summed
-      const MPI_Comm Comm             ///< [in] MPI communicator
+    const std::vector<R4> &Scalars, ///< [in] vector of scalars to be summed
+    const MPI_Comm Comm             ///< [in] MPI communicator
 ) {
    int NFields = Scalars.size();
    // For reproducibility, perform sum in double precision
@@ -252,8 +277,8 @@ std::vector<R4> globalSum(
 
 /// R8 specific interface
 std::vector<R8> globalSum(
-      const std::vector<R8> &Scalars, ///< [in] vector of scalars to be summed
-      const MPI_Comm Comm             ///< [in] MPI communicator
+    const std::vector<R8> &Scalars, ///< [in] vector of scalars to be summed
+    const MPI_Comm Comm             ///< [in] MPI communicator
 ) {
    if (R8SumNotInitialized)
       globalSumInit();
@@ -286,23 +311,33 @@ std::vector<R8> globalSum(
 /// I4 specific interface
 template <typename T, typename ML, typename MS>
 std::enable_if_t<std::is_same_v<I4, typename Kokkos::View<T>::value_type>, I4>
-globalSum(const Kokkos::View<T, ML, MS> Array, ///< [in] array to be summed 
+globalSum(const Kokkos::View<T, ML, MS> Array, ///< [in] array to be summed
           const MPI_Comm Comm,                 ///< [in] MPI Communicator
           const std::vector<I4> *IndxRange = nullptr ///< [in] index range
 ) {
    // Get array and layout information
-   bool IsHost;
-   size_t Strides[5];
+   bool IsHost = isReduceArrayOnHost(Array);
+   std::vector<I8> Strides(5);
    std::vector<I4> IRange(10);
-   getReduceArrayInfo(IRange, Strides, IsHost, Array, IndxRange);                         ///< [out] true if host array
+   getReduceArrayInfo(IRange, Strides, Array,
+                      IndxRange); ///< [out] true if host array
 
+   LOG_ERROR("After getArrayInfo: Strides: {} {} {} {} {}", Strides[0],
+             Strides[1], Strides[2], Strides[3], Strides[4]);
+   LOG_ERROR("After getArrayInfo: IRange: {} {}", IRange[0], IRange[1]);
+   LOG_ERROR("After getArrayInfo: IRange: {} {}", IRange[2], IRange[3]);
+   LOG_ERROR("After getArrayInfo: IRange: {} {}", IRange[4], IRange[5]);
+   LOG_ERROR("After getArrayInfo: IRange: {} {}", IRange[6], IRange[7]);
+   LOG_ERROR("After getArrayInfo: IRange: {} {}", IRange[8], IRange[9]);
+   // Compute local sum on host or device
    I4 LocalSum = 0;
    if (IsHost) {
-      for (int I = IRange[0]; I <= IRange[1]; ++I) {
-         for (int J = IRange[2]; J <= IRange[3]; ++J) {
-            for (int K = IRange[4]; K <= IRange[5]; ++K) {
-               for (int L = IRange[6]; L <= IRange[7]; ++L) {
-                  for (int M = IRange[8]; M <= IRange[9]; ++M) {
+      LOG_ERROR("In Host Sum");
+      for (I4 I = IRange[0]; I <= IRange[1]; ++I) {
+         for (I4 J = IRange[2]; J <= IRange[3]; ++J) {
+            for (I4 K = IRange[4]; K <= IRange[5]; ++K) {
+               for (I4 L = IRange[6]; L <= IRange[7]; ++L) {
+                  for (I4 M = IRange[8]; M <= IRange[9]; ++M) {
                      size_t LinearAdd = I * Strides[0] + J * Strides[1] +
                                         K * Strides[2] + L * Strides[3] +
                                         M * Strides[4];
@@ -312,91 +347,63 @@ globalSum(const Kokkos::View<T, ML, MS> Array, ///< [in] array to be summed
             }
          }
       }
+      LOG_ERROR("Local Host Sum {}", LocalSum);
    } else { // on device
-      OMEGA_SCOPE(LocStrides, Strides);
-      OMEGA_SCOPE(LocRange, IRange);
+      LOG_ERROR("In Device Sum");
+      Array1DI4 DevRange("IRange", 10);
+      Array1DI8 DevStrides("Strides", 5);
+      copyReduceInfoToDevice(DevRange, DevStrides, IRange, Strides);
+      OMEGA_SCOPE(LocStrides, DevStrides);
+      OMEGA_SCOPE(LocRange, DevRange);
       OMEGA_SCOPE(LocArray, Array);
       parallelReduce(
-         {IRange[1] + 1, IRange[3] + 1, IRange[5] + 1, IRange[7] + 1,
-          IRange[9] + 1},
-         KOKKOS_LAMBDA(int I, int J, int K, int L, int M, I4 &Accum)
-         { if (I >= LocRange[0] and J >= LocRange[2] and K >= LocRange[4] and
-               L >= LocRange[6] and M >= LocRange[8]) {
-              size_t LinearAdd = I * LocStrides[0] + J * LocStrides[1] +
-                                 K * LocStrides[2] + L * LocStrides[3] +
-                                 M * LocStrides[4];
-              Accum += LocArray.data()[LinearAdd];
-           }
-         },
-         LocalSum);
+          {IRange[1] + 1, IRange[3] + 1, IRange[5] + 1, IRange[7] + 1,
+           IRange[9] + 1},
+          KOKKOS_LAMBDA(int I, int J, int K, int L, int M, I4 &Accum) {
+             if (I >= LocRange(0) and J >= LocRange(2) and K >= LocRange(4) and
+                 L >= LocRange(6) and M >= LocRange(8)) {
+                size_t LinearAdd = I * LocStrides(0) + J * LocStrides(1) +
+                                   K * LocStrides(2) + L * LocStrides(3) +
+                                   M * LocStrides(4);
+                Accum += LocArray.data()[LinearAdd];
+             }
+          },
+          LocalSum);
+      LOG_ERROR("Device Local Sum {}", LocalSum);
    } // end if onHost
+   // Compute final sum by adding local sums from each MPI task
+   LOG_ERROR("After if block");
+   LOG_ERROR("Before MPI reduce Local Sum {}", LocalSum);
    I4 GlobalSum;
-   int Err = MPI_Allreduce(&LocalSum, &GlobalSum, 1, MPI_INT32_T, MPI_SUM,
-                           Comm);
+   int Err =
+       MPI_Allreduce(&LocalSum, &GlobalSum, 1, MPI_INT32_T, MPI_SUM, Comm);
    if (Err != MPI_SUCCESS)
       ABORT_ERROR("globalSum (I4 Array): Error in MPI_Allreduce");
+   LOG_ERROR("After MPI reduce Global Sum {}", GlobalSum);
    return GlobalSum;
 }
 /// I8 specific interface
 template <typename T, typename ML, typename MS>
 std::enable_if_t<std::is_same_v<I8, typename Kokkos::View<T>::value_type>, I8>
-globalSum(const Kokkos::View<T, ML, MS> Array, ///< [in] array to be summed 
+globalSum(const Kokkos::View<T, ML, MS> Array, ///< [in] array to be summed
           const MPI_Comm Comm,                 ///< [in] MPI Communicator
           const std::vector<I4> *IndxRange = nullptr ///< [in] index range
 ) {
-   int Dim = Array.rank;
-   OMEGA_ASSERT(Dim > 0 and Dim < 6,
-      "globalSum (I8 Array): Array with {} dimensions not supported", Dim);
-   bool IsHost = Kokkos::SpaceAccessibility<MS, Kokkos::HostSpace>::accessible;
-   int Imin{0}, Jmin{0}, Kmin{0}, Lmin{0}, Mmin{0};
-   int Imax{0}, Jmax{0}, Kmax{0}, Lmax{0}, Mmax{0};
-   // Kokkos may pad arrays so extract the actual stride used for storage
-   size_t Strides[5];
-   Array.stride(Strides);
-   // Strides returns non-zero stride for last dim so reset
-   for (int IDim = Dim; IDim < 5; ++IDim)
-      Strides[IDim] = 0;
-   // Set index range
-   if (IndxRange == nullptr) {
-      if (Dim > 0)
-         Imax = Array.extent(0) - 1;
-      if (Dim > 1)
-         Jmax = Array.extent(1) - 1;
-      if (Dim > 2)
-         Kmax = Array.extent(2) - 1;
-      if (Dim > 3)
-         Lmax = Array.extent(3) - 1;
-      if (Dim > 4)
-         Mmax = Array.extent(4) - 1;
-   } else {
-      if (Dim > 0) {
-         Imin = (*IndxRange)[0];
-         Imax = (*IndxRange)[1]; // adjust for loop criterion
-      }
-      if (Dim > 1) {
-         Jmin = (*IndxRange)[2];
-         Jmax = (*IndxRange)[3];
-      }
-      if (Dim > 2) {
-         Kmin = (*IndxRange)[4];
-         Kmax = (*IndxRange)[5];
-      }
-      if (Dim > 3) {
-         Lmin = (*IndxRange)[6];
-         Lmax = (*IndxRange)[7];
-      }
-      if (Dim > 4) {
-         Mmin = (*IndxRange)[8];
-         Mmax = (*IndxRange)[9];
-      }
-   }
+   // Get array and layout information
+   bool IsHost = isReduceArrayOnHost(Array);
+   std::vector<I8> Strides(5);
+   std::vector<I4> IRange(10);
+   getReduceArrayInfo(IRange, Strides, Array,
+                      IndxRange); ///< [out] true if host array
+
+   // Compute local sum on host or device
    I8 LocalSum = 0;
    if (IsHost) {
-      for (int I = Imin; I <= Imax; ++I) {
-         for (int J = Jmin; J <= Jmax; ++J) {
-            for (int K = Kmin; K <= Kmax; ++K) {
-               for (int L = Lmin; L <= Lmax; ++L) {
-                  for (int M = Mmin; M <= Mmax; ++M) {
+      for (I4 I = IRange[0]; I <= IRange[1]; ++I) {
+         for (I4 J = IRange[2]; J <= IRange[3]; ++J) {
+            for (I4 K = IRange[4]; K <= IRange[5]; ++K) {
+               for (I4 L = IRange[6]; L <= IRange[7]; ++L) {
+                  for (I4 M = IRange[8]; M <= IRange[9]; ++M) {
                      size_t LinearAdd = I * Strides[0] + J * Strides[1] +
                                         K * Strides[2] + L * Strides[3] +
                                         M * Strides[4];
@@ -407,29 +414,31 @@ globalSum(const Kokkos::View<T, ML, MS> Array, ///< [in] array to be summed
          }
       }
    } else { // on device
-      OMEGA_SCOPE(LocStrides, Strides);
-      OMEGA_SCOPE(IMin, Imin);
-      OMEGA_SCOPE(JMin, Jmin);
-      OMEGA_SCOPE(KMin, Kmin);
-      OMEGA_SCOPE(LMin, Lmin);
-      OMEGA_SCOPE(MMin, Mmin);
+      // Transfer some info on device
+      Array1DI4 DevRange("IRange", 10);
+      Array1DI8 DevStrides("Strides", 5);
+      copyReduceInfoToDevice(DevRange, DevStrides, IRange, Strides);
+      OMEGA_SCOPE(LocStrides, DevStrides);
+      OMEGA_SCOPE(LocRange, DevRange);
       OMEGA_SCOPE(LocArray, Array);
       parallelReduce(
-         {Imax + 1, Jmax + 1, Kmax + 1, Lmax + 1, Mmax + 1},
-         KOKKOS_LAMBDA(int I, int J, int K, int L, int M, I8 &Accum)
-         { if (I >= IMin and J >= JMin and K >= KMin and L >= LMin and
-               M >= MMin) {
-              size_t LinearAdd = I * LocStrides[0] + J * LocStrides[1] +
-                                 K * LocStrides[2] + L * LocStrides[3] +
-                                 M * LocStrides[4];
-              Accum += LocArray.data()[LinearAdd];
-           }
-         },
-         LocalSum);
+          {IRange[1] + 1, IRange[3] + 1, IRange[5] + 1, IRange[7] + 1,
+           IRange[9] + 1},
+          KOKKOS_LAMBDA(int I, int J, int K, int L, int M, I8 &Accum) {
+             if (I >= LocRange(0) and J >= LocRange(2) and K >= LocRange(4) and
+                 L >= LocRange(6) and M >= LocRange(8)) {
+                size_t LinearAdd = I * LocStrides(0) + J * LocStrides(1) +
+                                   K * LocStrides(2) + L * LocStrides(3) +
+                                   M * LocStrides(4);
+                Accum += LocArray.data()[LinearAdd];
+             }
+          },
+          LocalSum);
    } // end if onHost
+   // Compute final sum by adding local sums from each MPI task
    I8 GlobalSum;
-   int Err = MPI_Allreduce(&LocalSum, &GlobalSum, 1, MPI_INT64_T, MPI_SUM,
-                           Comm);
+   int Err =
+       MPI_Allreduce(&LocalSum, &GlobalSum, 1, MPI_INT64_T, MPI_SUM, Comm);
    if (Err != MPI_SUCCESS)
       ABORT_ERROR("globalSum (I8 Array): Error in MPI_Allreduce");
    return GlobalSum;
@@ -437,63 +446,25 @@ globalSum(const Kokkos::View<T, ML, MS> Array, ///< [in] array to be summed
 /// R4 specific interface
 template <typename T, typename ML, typename MS>
 std::enable_if_t<std::is_same_v<R4, typename Kokkos::View<T>::value_type>, R4>
-globalSum(const Kokkos::View<T, ML, MS> Array, ///< [in] array to be summed 
+globalSum(const Kokkos::View<T, ML, MS> Array, ///< [in] array to be summed
           const MPI_Comm Comm,                 ///< [in] MPI Communicator
           const std::vector<I4> *IndxRange = nullptr ///< [in] index range
 ) {
-   int Dim = Array.rank;
-   OMEGA_ASSERT(Dim > 0 and Dim < 6,
-      "globalSum (R4 Array): Array with {} dimensions not supported", Dim);
-   bool IsHost = Kokkos::SpaceAccessibility<MS, Kokkos::HostSpace>::accessible;
-   int Imin{0}, Jmin{0}, Kmin{0}, Lmin{0}, Mmin{0};
-   int Imax{0}, Jmax{0}, Kmax{0}, Lmax{0}, Mmax{0};
-   // Kokkos may pad arrays so extract the actual stride used for storage
-   size_t Strides[5];
-   Array.stride(Strides);
-   // Strides returns non-zero stride for last dim so reset
-   for (int IDim = Dim; IDim < 5; ++IDim)
-      Strides[IDim] = 0;
-   // Set index range
-   if (IndxRange == nullptr) {
-      if (Dim > 0)
-         Imax = Array.extent(0) - 1;
-      if (Dim > 1)
-         Jmax = Array.extent(1) - 1;
-      if (Dim > 2)
-         Kmax = Array.extent(2) - 1;
-      if (Dim > 3)
-         Lmax = Array.extent(3) - 1;
-      if (Dim > 4)
-         Mmax = Array.extent(4) - 1;
-   } else {
-      if (Dim > 0) {
-         Imin = (*IndxRange)[0];
-         Imax = (*IndxRange)[1]; // adjust for loop criterion
-      }
-      if (Dim > 1) {
-         Jmin = (*IndxRange)[2];
-         Jmax = (*IndxRange)[3];
-      }
-      if (Dim > 2) {
-         Kmin = (*IndxRange)[4];
-         Kmax = (*IndxRange)[5];
-      }
-      if (Dim > 3) {
-         Lmin = (*IndxRange)[6];
-         Lmax = (*IndxRange)[7];
-      }
-      if (Dim > 4) {
-         Mmin = (*IndxRange)[8];
-         Mmax = (*IndxRange)[9];
-      }
-   }
+   // Get array and layout information
+   bool IsHost = isReduceArrayOnHost(Array);
+   std::vector<I8> Strides(5);
+   std::vector<I4> IRange(10);
+   getReduceArrayInfo(IRange, Strides, Array,
+                      IndxRange); ///< [out] true if host array
+
+   // Compute local sum on host or device
    R8 LocalSum = 0;
    if (IsHost) {
-      for (int I = Imin; I <= Imax; ++I) {
-         for (int J = Jmin; J <= Jmax; ++J) {
-            for (int K = Kmin; K <= Kmax; ++K) {
-               for (int L = Lmin; L <= Lmax; ++L) {
-                  for (int M = Mmin; M <= Mmax; ++M) {
+      for (I4 I = IRange[0]; I <= IRange[1]; ++I) {
+         for (I4 J = IRange[2]; J <= IRange[3]; ++J) {
+            for (I4 K = IRange[4]; K <= IRange[5]; ++K) {
+               for (I4 L = IRange[6]; L <= IRange[7]; ++L) {
+                  for (I4 M = IRange[8]; M <= IRange[9]; ++M) {
                      size_t LinearAdd = I * Strides[0] + J * Strides[1] +
                                         K * Strides[2] + L * Strides[3] +
                                         M * Strides[4];
@@ -504,29 +475,30 @@ globalSum(const Kokkos::View<T, ML, MS> Array, ///< [in] array to be summed
          }
       }
    } else { // on device
-      OMEGA_SCOPE(LocStrides, Strides);
-      OMEGA_SCOPE(IMin, Imin);
-      OMEGA_SCOPE(JMin, Jmin);
-      OMEGA_SCOPE(KMin, Kmin);
-      OMEGA_SCOPE(LMin, Lmin);
-      OMEGA_SCOPE(MMin, Mmin);
+      // Transfer some info on device
+      Array1DI4 DevRange("IRange", 10);
+      Array1DI8 DevStrides("Strides", 5);
+      copyReduceInfoToDevice(DevRange, DevStrides, IRange, Strides);
+      OMEGA_SCOPE(LocStrides, DevStrides);
+      OMEGA_SCOPE(LocRange, DevRange);
       OMEGA_SCOPE(LocArray, Array);
       parallelReduce(
-         {Imax + 1, Jmax + 1, Kmax + 1, Lmax + 1, Mmax + 1},
-         KOKKOS_LAMBDA(int I, int J, int K, int L, int M, R8 &Accum)
-         { if (I >= IMin and J >= JMin and K >= KMin and L >= LMin and
-               M >= MMin) {
-              size_t LinearAdd = I * LocStrides[0] + J * LocStrides[1] +
-                                 K * LocStrides[2] + L * LocStrides[3] +
-                                 M * LocStrides[4];
-              Accum += LocArray.data()[LinearAdd];
-           }
-         },
-         LocalSum);
+          {IRange[1] + 1, IRange[3] + 1, IRange[5] + 1, IRange[7] + 1,
+           IRange[9] + 1},
+          KOKKOS_LAMBDA(int I, int J, int K, int L, int M, R8 &Accum) {
+             if (I >= LocRange(0) and J >= LocRange(2) and K >= LocRange(4) and
+                 L >= LocRange(6) and M >= LocRange(8)) {
+                size_t LinearAdd = I * LocStrides[0] + J * LocStrides[1] +
+                                   K * LocStrides[2] + L * LocStrides[3] +
+                                   M * LocStrides[4];
+                Accum += LocArray.data()[LinearAdd];
+             }
+          },
+          LocalSum);
    } // end if onHost
+   // Compute final sum by adding local sums from each MPI task
    R8 GlobalTmp;
-   int Err = MPI_Allreduce(&LocalSum, &GlobalTmp, 1, MPI_DOUBLE, MPI_SUM,
-                           Comm);
+   int Err = MPI_Allreduce(&LocalSum, &GlobalTmp, 1, MPI_DOUBLE, MPI_SUM, Comm);
    if (Err != MPI_SUCCESS)
       ABORT_ERROR("globalSum (R4 Array): Error in MPI_Allreduce");
    R4 GlobalSum = GlobalTmp; // convert back to R4
@@ -535,63 +507,25 @@ globalSum(const Kokkos::View<T, ML, MS> Array, ///< [in] array to be summed
 /// R8 specific interface
 template <typename T, typename ML, typename MS>
 std::enable_if_t<std::is_same_v<R8, typename Kokkos::View<T>::value_type>, R8>
-globalSum(const Kokkos::View<T, ML, MS> Array, ///< [in] array to be summed 
+globalSum(const Kokkos::View<T, ML, MS> Array, ///< [in] array to be summed
           const MPI_Comm Comm,                 ///< [in] MPI Communicator
           const std::vector<I4> *IndxRange = nullptr ///< [in] index range
 ) {
-   int Dim = Array.rank;
-   OMEGA_ASSERT(Dim > 0 and Dim < 6,
-      "globalSum (R8 Array): Arrays with {} dimensions not supported", Dim);
-   bool IsHost = Kokkos::SpaceAccessibility<MS, Kokkos::HostSpace>::accessible;
-   int Imin{0}, Jmin{0}, Kmin{0}, Lmin{0}, Mmin{0};
-   int Imax{0}, Jmax{0}, Kmax{0}, Lmax{0}, Mmax{0};
-   // Kokkos may pad arrays so extract the actual stride used for storage
-   size_t Strides[5];
-   Array.stride(Strides);
-   // Strides returns non-zero stride for last dim so reset
-   for (int IDim = Dim; IDim < 5; ++IDim)
-      Strides[IDim] = 0;
-   // Set index range
-   if (IndxRange == nullptr) {
-      if (Dim > 0)
-         Imax = Array.extent(0) - 1;
-      if (Dim > 1)
-         Jmax = Array.extent(1) - 1;
-      if (Dim > 2)
-         Kmax = Array.extent(2) - 1;
-      if (Dim > 3)
-         Lmax = Array.extent(3) - 1;
-      if (Dim > 4)
-         Mmax = Array.extent(4) - 1;
-   } else {
-      if (Dim > 0) {
-         Imin = (*IndxRange)[0];
-         Imax = (*IndxRange)[1]; // adjust for loop criterion
-      }
-      if (Dim > 1) {
-         Jmin = (*IndxRange)[2];
-         Jmax = (*IndxRange)[3];
-      }
-      if (Dim > 2) {
-         Kmin = (*IndxRange)[4];
-         Kmax = (*IndxRange)[5];
-      }
-      if (Dim > 3) {
-         Lmin = (*IndxRange)[6];
-         Lmax = (*IndxRange)[7];
-      }
-      if (Dim > 4) {
-         Mmin = (*IndxRange)[8];
-         Mmax = (*IndxRange)[9];
-      }
-   }
+   // Get array and layout information
+   bool IsHost = isReduceArrayOnHost(Array);
+   std::vector<I8> Strides(5);
+   std::vector<I4> IRange(10);
+   getReduceArrayInfo(IRange, Strides, Array,
+                      IndxRange); ///< [out] true if host array
+
+   // Compute local sum on host or device
    complex<double> DDTmp; // Sum and residual for DD algorithm
    if (IsHost) {
-      for (int I = Imin; I <= Imax; ++I) {
-         for (int J = Jmin; J <= Jmax; ++J) {
-            for (int K = Kmin; K <= Kmax; ++K) {
-               for (int L = Lmin; L <= Lmax; ++L) {
-                  for (int M = Mmin; M <= Mmax; ++M) {
+      for (I4 I = IRange[0]; I <= IRange[1]; ++I) {
+         for (I4 J = IRange[2]; J <= IRange[3]; ++J) {
+            for (I4 K = IRange[4]; K <= IRange[5]; ++K) {
+               for (I4 L = IRange[6]; L <= IRange[7]; ++L) {
+                  for (I4 M = IRange[8]; M <= IRange[9]; ++M) {
                      size_t LinearAdd = I * Strides[0] + J * Strides[1] +
                                         K * Strides[2] + L * Strides[3] +
                                         M * Strides[4];
@@ -603,29 +537,30 @@ globalSum(const Kokkos::View<T, ML, MS> Array, ///< [in] array to be summed
          }
       }
    } else { // on device
-      // TODO: add custom bit-reproducible Kokkos reducer
-      OMEGA_SCOPE(LocStrides, Strides);
-      OMEGA_SCOPE(IMin, Imin);
-      OMEGA_SCOPE(JMin, Jmin);
-      OMEGA_SCOPE(KMin, Kmin);
-      OMEGA_SCOPE(LMin, Lmin);
-      OMEGA_SCOPE(MMin, Mmin);
-      OMEGA_SCOPE(LocArray, Array);
       R8 LocalSum = 0;
+      // Transfer some info on device
+      Array1DI4 DevRange("IRange", 10);
+      Array1DI8 DevStrides("Strides", 5);
+      copyReduceInfoToDevice(DevRange, DevStrides, IRange, Strides);
+      OMEGA_SCOPE(LocStrides, DevStrides);
+      OMEGA_SCOPE(LocRange, DevRange);
+      OMEGA_SCOPE(LocArray, Array);
       parallelReduce(
-         {Imax + 1, Jmax + 1, Kmax + 1, Lmax + 1, Mmax + 1},
-         KOKKOS_LAMBDA(int I, int J, int K, int L, int M, R8 &Accum)
-         { if (I >= IMin and J >= JMin and K >= KMin and L >= LMin and
-               M >= MMin) {
-              size_t LinearAdd = I * LocStrides[0] + J * LocStrides[1] +
-                                 K * LocStrides[2] + L * LocStrides[3] +
-                                 M * LocStrides[4];
-              Accum += LocArray.data()[LinearAdd];
-           }
-         },
-         LocalSum);
+          {IRange[1] + 1, IRange[3] + 1, IRange[5] + 1, IRange[7] + 1,
+           IRange[9] + 1},
+          KOKKOS_LAMBDA(int I, int J, int K, int L, int M, R8 &Accum) {
+             if (I >= LocRange(0) and J >= LocRange(2) and K >= LocRange(4) and
+                 L >= LocRange(6) and M >= LocRange(8)) {
+                size_t LinearAdd = I * LocStrides[0] + J * LocStrides[1] +
+                                   K * LocStrides[2] + L * LocStrides[3] +
+                                   M * LocStrides[4];
+                Accum += LocArray.data()[LinearAdd];
+             }
+          },
+          LocalSum);
       DDTmp = complex<double>(LocalSum, 0.0);
    } // end if onHost
+   // Compute final sum by adding local sums from each MPI task
    complex<double> GlobalTmp(0.0, 0.0);
    int Err = MPI_Allreduce(&DDTmp, &GlobalTmp, 1, MPI_C_DOUBLE_COMPLEX,
                            MPI_SUMDD, Comm);
@@ -646,106 +581,65 @@ std::enable_if_t<std::is_same_v<I4, typename Kokkos::View<T>::value_type>, I4>
 globalSum(const Kokkos::View<T, ML, MS> Arr1, ///< [in] first  array in product
           const Kokkos::View<T, ML, MS> Arr2, ///< [in] second array in product
           const MPI_Comm Comm,                ///< [in] MPI Communicator
-          const std::vector<I4> *IndxRange = nullptr   ///< [in] opt index range
+          const std::vector<I4> *IndxRange = nullptr ///< [in] opt index range
 ) {
-   // Check some properties
-   //LOG_ERROR("In sum product I4 checks");
-   int Dim = Arr1.rank;
-   OMEGA_REQUIRE(Dim > 0 and Dim < 6,
-      "globalSum (I4 Array product): Arrays with {} dimensions not supported",
-      Dim);
-   OMEGA_REQUIRE(Arr2.rank == Dim,
-                "globalSum (I4 Array product): Arrays must have same rank");
+   // Some error checks
+   OMEGA_REQUIRE(Arr1.rank == Arr2.rank,
+                 "globalSum (I4 Array product): Arrays must have same rank");
    OMEGA_REQUIRE(Arr1.size() == Arr2.size(),
-                "globalSum (I4 Array product): Arrays must have same size");
-   bool IsHost = Kokkos::SpaceAccessibility<MS, Kokkos::HostSpace>::accessible;
-   int Imin{0}, Jmin{0}, Kmin{0}, Lmin{0}, Mmin{0};
-   int Imax{0}, Jmax{0}, Kmax{0}, Lmax{0}, Mmax{0};
-   // Kokkos may pad arrays so extract the actual stride used for storage
-   size_t Strides[5];
-   Arr1.stride(Strides);
-   // Strides returns non-zero stride for last dim so reset
-   for (int IDim = Dim; IDim < 5; ++IDim)
-      Strides[IDim] = 0;
-   //LOG_ERROR("In sum product I4 index range");
-   // Set index range
-   if (IndxRange == nullptr) {
-      if (Dim > 0)
-         Imax = Arr1.extent(0) - 1;
-      if (Dim > 1)
-         Jmax = Arr1.extent(1) - 1;
-      if (Dim > 2)
-         Kmax = Arr1.extent(2) - 1;
-      if (Dim > 3)
-         Lmax = Arr1.extent(3) - 1;
-      if (Dim > 4)
-         Mmax = Arr1.extent(4) - 1;
-   } else {
-      if (Dim > 0) {
-         Imin = (*IndxRange)[0];
-         Imax = (*IndxRange)[1]; // adjust for loop criterion
-      }
-      if (Dim > 1) {
-         Jmin = (*IndxRange)[2];
-         Jmax = (*IndxRange)[3];
-      }
-      if (Dim > 2) {
-         Kmin = (*IndxRange)[4];
-         Kmax = (*IndxRange)[5];
-      }
-      if (Dim > 3) {
-         Lmin = (*IndxRange)[6];
-         Lmax = (*IndxRange)[7];
-      }
-      if (Dim > 4) {
-         Mmin = (*IndxRange)[8];
-         Mmax = (*IndxRange)[9];
-      }
-   }
-   //LOG_ERROR("In sum product I4 before loop");
+                 "globalSum (I4 Array product): Arrays must have same size");
+   // Get array and layout information
+   bool IsHost = isReduceArrayOnHost(Arr1);
+   std::vector<I8> Strides(5);
+   std::vector<I4> IRange(10);
+   getReduceArrayInfo(IRange, Strides, Arr1,
+                      IndxRange); ///< [out] true if host array
+
+   // Compute local sum on host or device
    I4 LocalSum = 0;
    if (IsHost) {
-      for (int I = Imin; I <= Imax; ++I) {
-         for (int J = Jmin; J <= Jmax; ++J) {
-            for (int K = Kmin; K <= Kmax; ++K) {
-               for (int L = Lmin; L <= Lmax; ++L) {
-                  for (int M = Mmin; M <= Mmax; ++M) {
+      for (I4 I = IRange[0]; I <= IRange[1]; ++I) {
+         for (I4 J = IRange[2]; J <= IRange[3]; ++J) {
+            for (I4 K = IRange[4]; K <= IRange[5]; ++K) {
+               for (I4 L = IRange[6]; L <= IRange[7]; ++L) {
+                  for (I4 M = IRange[8]; M <= IRange[9]; ++M) {
                      size_t LinearAdd = I * Strides[0] + J * Strides[1] +
                                         K * Strides[2] + L * Strides[3] +
                                         M * Strides[4];
-                     LocalSum += Arr1.data()[LinearAdd] *
-                                 Arr2.data()[LinearAdd];
+                     LocalSum +=
+                         Arr1.data()[LinearAdd] * Arr2.data()[LinearAdd];
                   }
                }
             }
          }
       }
    } else { // on device
-      OMEGA_SCOPE(LocStrides, Strides);
-      OMEGA_SCOPE(IMin, Imin);
-      OMEGA_SCOPE(JMin, Jmin);
-      OMEGA_SCOPE(KMin, Kmin);
-      OMEGA_SCOPE(LMin, Lmin);
-      OMEGA_SCOPE(MMin, Mmin);
+      // Transfer some info on device
+      Array1DI4 DevRange("IRange", 10);
+      Array1DI8 DevStrides("Strides", 5);
+      copyReduceInfoToDevice(DevRange, DevStrides, IRange, Strides);
+      OMEGA_SCOPE(LocStrides, DevStrides);
+      OMEGA_SCOPE(LocRange, DevRange);
       OMEGA_SCOPE(LocArr1, Arr1);
       OMEGA_SCOPE(LocArr2, Arr2);
       parallelReduce(
-         {Imax + 1, Jmax + 1, Kmax + 1, Lmax + 1, Mmax + 1},
-         KOKKOS_LAMBDA(int I, int J, int K, int L, int M, I4 &Accum)
-         { if (I >= IMin and J >= JMin and K >= KMin and L >= LMin and
-               M >= MMin) {
-              size_t LinearAdd = I * LocStrides[0] + J * LocStrides[1] +
-                                 K * LocStrides[2] + L * LocStrides[3] +
-                                 M * LocStrides[4];
-              Accum += LocArr1.data()[LinearAdd] * LocArr2.data()[LinearAdd];
-           }
-         },
-         LocalSum);
+          {IRange[1] + 1, IRange[3] + 1, IRange[5] + 1, IRange[7] + 1,
+           IRange[9] + 1},
+          KOKKOS_LAMBDA(int I, int J, int K, int L, int M, I4 &Accum) {
+             if (I >= LocRange(0) and J >= LocRange(2) and K >= LocRange(4) and
+                 L >= LocRange(6) and M >= LocRange(8)) {
+                size_t LinearAdd = I * LocStrides[0] + J * LocStrides[1] +
+                                   K * LocStrides[2] + L * LocStrides[3] +
+                                   M * LocStrides[4];
+                Accum += LocArr1.data()[LinearAdd] * LocArr2.data()[LinearAdd];
+             }
+          },
+          LocalSum);
    } // end if onHost
-   //LOG_ERROR("In sum product I4 before MPI");
+   // Compute final sum by adding local sums from each MPI task
    I4 GlobalSum;
-   int Err = MPI_Allreduce(&LocalSum, &GlobalSum, 1, MPI_INT32_T, MPI_SUM,
-                           Comm);
+   int Err =
+       MPI_Allreduce(&LocalSum, &GlobalSum, 1, MPI_INT32_T, MPI_SUM, Comm);
    if (Err != MPI_SUCCESS)
       ABORT_ERROR("globalSum (I4 Array product): Error in MPI_Allreduce");
    return GlobalSum;
@@ -756,105 +650,65 @@ std::enable_if_t<std::is_same_v<I8, typename Kokkos::View<T>::value_type>, I8>
 globalSum(const Kokkos::View<T, ML, MS> Arr1, // [in] first  array in product
           const Kokkos::View<T, ML, MS> Arr2, // [in] second array in product
           const MPI_Comm Comm,                // [in] MPI Communicator
-          const std::vector<I4> *IndxRange = nullptr   ///< [in] opt index range
+          const std::vector<I4> *IndxRange = nullptr ///< [in] opt index range
 ) {
-   //LOG_ERROR("In Sum Prod I8 Checks");
-   int Dim = Arr1.rank;
-   OMEGA_ASSERT(Dim > 0 and Dim < 6,
-      "globalSum (I8 Array product): Arrays with {} dimensions not supported",
-      Dim);
-   OMEGA_ASSERT(Arr2.rank == Dim,
-                "globalSum (I8 Array product): Arrays must have same rank");
-   OMEGA_ASSERT(Arr1.size() == Arr2.size(),
-                "globalSum (I8 Array product): Arrays must have same size");
-   bool IsHost = Kokkos::SpaceAccessibility<MS, Kokkos::HostSpace>::accessible;
-   int Imin{0}, Jmin{0}, Kmin{0}, Lmin{0}, Mmin{0};
-   int Imax{0}, Jmax{0}, Kmax{0}, Lmax{0}, Mmax{0};
-   // Kokkos may pad arrays so extract the actual stride used for storage
-   size_t Strides[5];
-   Arr1.stride(Strides);
-   // Strides returns non-zero stride for last dim so reset
-   for (int IDim = Dim; IDim < 5; ++IDim)
-      Strides[IDim] = 0;
-   // Set index range
-   //LOG_ERROR("In Sum Prod I8 Indx range");
-   if (IndxRange == nullptr) {
-      if (Dim > 0)
-         Imax = Arr1.extent(0) - 1;
-      if (Dim > 1)
-         Jmax = Arr1.extent(1) - 1;
-      if (Dim > 2)
-         Kmax = Arr1.extent(2) - 1;
-      if (Dim > 3)
-         Lmax = Arr1.extent(3) - 1;
-      if (Dim > 4)
-         Mmax = Arr1.extent(4) - 1;
-   } else {
-      if (Dim > 0) {
-         Imin = (*IndxRange)[0];
-         Imax = (*IndxRange)[1]; // adjust for loop criterion
-      }
-      if (Dim > 1) {
-         Jmin = (*IndxRange)[2];
-         Jmax = (*IndxRange)[3];
-      }
-      if (Dim > 2) {
-         Kmin = (*IndxRange)[4];
-         Kmax = (*IndxRange)[5];
-      }
-      if (Dim > 3) {
-         Lmin = (*IndxRange)[6];
-         Lmax = (*IndxRange)[7];
-      }
-      if (Dim > 4) {
-         Mmin = (*IndxRange)[8];
-         Mmax = (*IndxRange)[9];
-      }
-   }
-   //LOG_ERROR("In Sum Prod I8 before loop");
+   // Some error checks
+   OMEGA_REQUIRE(Arr1.rank == Arr2.rank,
+                 "globalSum (I8 Array product): Arrays must have same rank");
+   OMEGA_REQUIRE(Arr1.size() == Arr2.size(),
+                 "globalSum (I8 Array product): Arrays must have same size");
+   // Get array and layout information
+   bool IsHost = isReduceArrayOnHost(Arr1);
+   std::vector<I8> Strides(5);
+   std::vector<I4> IRange(10);
+   getReduceArrayInfo(IRange, Strides, Arr1,
+                      IndxRange); ///< [out] true if host array
+
+   // Compute local sum on host or device
    I8 LocalSum = 0;
    if (IsHost) {
-      for (int I = Imin; I <= Imax; ++I) {
-         for (int J = Jmin; J <= Jmax; ++J) {
-            for (int K = Kmin; K <= Kmax; ++K) {
-               for (int L = Lmin; L <= Lmax; ++L) {
-                  for (int M = Mmin; M <= Mmax; ++M) {
+      for (I4 I = IRange[0]; I <= IRange[1]; ++I) {
+         for (I4 J = IRange[2]; J <= IRange[3]; ++J) {
+            for (I4 K = IRange[4]; K <= IRange[5]; ++K) {
+               for (I4 L = IRange[6]; L <= IRange[7]; ++L) {
+                  for (I4 M = IRange[8]; M <= IRange[9]; ++M) {
                      size_t LinearAdd = I * Strides[0] + J * Strides[1] +
                                         K * Strides[2] + L * Strides[3] +
                                         M * Strides[4];
-                     LocalSum += Arr1.data()[LinearAdd] *
-                                 Arr2.data()[LinearAdd];
+                     LocalSum +=
+                         Arr1.data()[LinearAdd] * Arr2.data()[LinearAdd];
                   }
                }
             }
          }
       }
    } else { // on device
-      OMEGA_SCOPE(LocStrides, Strides);
-      OMEGA_SCOPE(IMin, Imin);
-      OMEGA_SCOPE(JMin, Jmin);
-      OMEGA_SCOPE(KMin, Kmin);
-      OMEGA_SCOPE(LMin, Lmin);
-      OMEGA_SCOPE(MMin, Mmin);
+      // Transfer some info on device
+      Array1DI4 DevRange("IRange", 10);
+      Array1DI8 DevStrides("Strides", 5);
+      copyReduceInfoToDevice(DevRange, DevStrides, IRange, Strides);
+      OMEGA_SCOPE(LocStrides, DevStrides);
+      OMEGA_SCOPE(LocRange, DevRange);
       OMEGA_SCOPE(LocArr1, Arr1);
       OMEGA_SCOPE(LocArr2, Arr2);
       parallelReduce(
-         {Imax + 1, Jmax + 1, Kmax + 1, Lmax + 1, Mmax + 1},
-         KOKKOS_LAMBDA(int I, int J, int K, int L, int M, I8 &Accum)
-         { if (I >= IMin and J >= JMin and K >= KMin and L >= LMin and
-               M >= MMin) {
-              size_t LinearAdd = I * LocStrides[0] + J * LocStrides[1] +
-                                 K * LocStrides[2] + L * LocStrides[3] +
-                                 M * LocStrides[4];
-              Accum += LocArr1.data()[LinearAdd] * LocArr2.data()[LinearAdd];
-           }
-         },
-         LocalSum);
+          {IRange[1] + 1, IRange[3] + 1, IRange[5] + 1, IRange[7] + 1,
+           IRange[9] + 1},
+          KOKKOS_LAMBDA(int I, int J, int K, int L, int M, I8 &Accum) {
+             if (I >= LocRange(0) and J >= LocRange(2) and K >= LocRange(4) and
+                 L >= LocRange(6) and M >= LocRange(8)) {
+                size_t LinearAdd = I * LocStrides[0] + J * LocStrides[1] +
+                                   K * LocStrides[2] + L * LocStrides[3] +
+                                   M * LocStrides[4];
+                Accum += LocArr1.data()[LinearAdd] * LocArr2.data()[LinearAdd];
+             }
+          },
+          LocalSum);
    } // end if onHost
-   //LOG_ERROR("In Sum Prod I8 before loop");
+   // Compute final sum by adding local sums from each MPI task
    I8 GlobalSum;
-   int Err = MPI_Allreduce(&LocalSum, &GlobalSum, 1, MPI_INT64_T, MPI_SUM,
-                           Comm);
+   int Err =
+       MPI_Allreduce(&LocalSum, &GlobalSum, 1, MPI_INT64_T, MPI_SUM, Comm);
    if (Err != MPI_SUCCESS)
       ABORT_ERROR("globalSum (I8 array product): Error in MPI_Allreduce");
    return GlobalSum;
@@ -865,69 +719,28 @@ std::enable_if_t<std::is_same_v<R4, typename Kokkos::View<T>::value_type>, R4>
 globalSum(const Kokkos::View<T, ML, MS> Arr1, // [in] first  array in product
           const Kokkos::View<T, ML, MS> Arr2, // [in] second array in product
           const MPI_Comm Comm,                // [in] MPI Communicator
-          const std::vector<I4> *IndxRange = nullptr   ///< [in] opt index range
+          const std::vector<I4> *IndxRange = nullptr ///< [in] opt index range
 ) {
-   //LOG_ERROR("Sum with prod R4 checks");
-   int Dim = Arr1.rank;
-   OMEGA_ASSERT(Dim > 0 and Dim < 6,
-      "globalSum (R4 Array product): Arrays with {} dimensions not supported",
-      Dim);
-   OMEGA_ASSERT(Arr2.rank == Dim,
-                "globalSum (R4 Array product): Arrays must have same rank");
-   OMEGA_ASSERT(Arr1.size() == Arr2.size(),
-                "globalSum (R4 Array product): Arrays must have same size");
-   bool IsHost = Kokkos::SpaceAccessibility<MS, Kokkos::HostSpace>::accessible;
-   int Imin{0}, Jmin{0}, Kmin{0}, Lmin{0}, Mmin{0};
-   int Imax{0}, Jmax{0}, Kmax{0}, Lmax{0}, Mmax{0};
-   // Kokkos may pad arrays so extract the actual stride used for storage
-   size_t Strides[5];
-   Arr1.stride(Strides);
-   // Strides returns non-zero stride for last dim so reset
-   for (int IDim = Dim; IDim < 5; ++IDim)
-      Strides[IDim] = 0;
-   // Set index range
-   //LOG_ERROR("Sum with prod R4 index range");
-   if (IndxRange == nullptr) {
-      if (Dim > 0)
-         Imax = Arr1.extent(0) - 1;
-      if (Dim > 1)
-         Jmax = Arr1.extent(1) - 1;
-      if (Dim > 2)
-         Kmax = Arr1.extent(2) - 1;
-      if (Dim > 3)
-         Lmax = Arr1.extent(3) - 1;
-      if (Dim > 4)
-         Mmax = Arr1.extent(4) - 1;
-   } else {
-      if (Dim > 0) {
-         Imin = (*IndxRange)[0];
-         Imax = (*IndxRange)[1]; // adjust for loop criterion
-      }
-      if (Dim > 1) {
-         Jmin = (*IndxRange)[2];
-         Jmax = (*IndxRange)[3];
-      }
-      if (Dim > 2) {
-         Kmin = (*IndxRange)[4];
-         Kmax = (*IndxRange)[5];
-      }
-      if (Dim > 3) {
-         Lmin = (*IndxRange)[6];
-         Lmax = (*IndxRange)[7];
-      }
-      if (Dim > 4) {
-         Mmin = (*IndxRange)[8];
-         Mmax = (*IndxRange)[9];
-      }
-   }
-   //LOG_ERROR("Sum with prod R4 before loop");
+   // Some error checks
+   OMEGA_REQUIRE(Arr1.rank == Arr2.rank,
+                 "globalSum (R4 Array product): Arrays must have same rank");
+   OMEGA_REQUIRE(Arr1.size() == Arr2.size(),
+                 "globalSum (R4 Array product): Arrays must have same size");
+   // Get array and layout information
+   bool IsHost = isReduceArrayOnHost(Arr1);
+   std::vector<I8> Strides(5);
+   std::vector<I4> IRange(10);
+   getReduceArrayInfo(IRange, Strides, Arr1,
+                      IndxRange); ///< [out] true if host array
+
+   // Compute local sum on host or device
    R8 LocalSum = 0;
    if (IsHost) {
-      for (int I = Imin; I <= Imax; ++I) {
-         for (int J = Jmin; J <= Jmax; ++J) {
-            for (int K = Kmin; K <= Kmax; ++K) {
-               for (int L = Lmin; L <= Lmax; ++L) {
-                  for (int M = Mmin; M <= Mmax; ++M) {
+      for (I4 I = IRange[0]; I <= IRange[1]; ++I) {
+         for (I4 J = IRange[2]; J <= IRange[3]; ++J) {
+            for (I4 K = IRange[4]; K <= IRange[5]; ++K) {
+               for (I4 L = IRange[6]; L <= IRange[7]; ++L) {
+                  for (I4 M = IRange[8]; M <= IRange[9]; ++M) {
                      size_t LinearAdd = I * Strides[0] + J * Strides[1] +
                                         K * Strides[2] + L * Strides[3] +
                                         M * Strides[4];
@@ -941,34 +754,34 @@ globalSum(const Kokkos::View<T, ML, MS> Arr1, // [in] first  array in product
          }
       }
    } else { // on device
-      OMEGA_SCOPE(LocStrides, Strides);
-      OMEGA_SCOPE(IMin, Imin);
-      OMEGA_SCOPE(JMin, Jmin);
-      OMEGA_SCOPE(KMin, Kmin);
-      OMEGA_SCOPE(LMin, Lmin);
-      OMEGA_SCOPE(MMin, Mmin);
+      // Transfer some info on device
+      Array1DI4 DevRange("IRange", 10);
+      Array1DI8 DevStrides("Strides", 5);
+      copyReduceInfoToDevice(DevRange, DevStrides, IRange, Strides);
+      OMEGA_SCOPE(LocStrides, DevStrides);
+      OMEGA_SCOPE(LocRange, DevRange);
       OMEGA_SCOPE(LocArr1, Arr1);
       OMEGA_SCOPE(LocArr2, Arr2);
       parallelReduce(
-         {Imax + 1, Jmax + 1, Kmax + 1, Lmax + 1, Mmax + 1},
-         KOKKOS_LAMBDA(int I, int J, int K, int L, int M, R8 &Accum)
-         { if (I >= IMin and J >= JMin and K >= KMin and L >= LMin and
-               M >= MMin) {
-              size_t LinearAdd = I * LocStrides[0] + J * LocStrides[1] +
-                                 K * LocStrides[2] + L * LocStrides[3] +
-                                 M * LocStrides[4];
-              // convert each to R8 to be sure prod is computed in R8
-              R8 DTmp1 = LocArr1.data()[LinearAdd];
-              R8 DTmp2 = LocArr2.data()[LinearAdd];
-              Accum += DTmp1 * DTmp2;
-           }
-         },
-         LocalSum);
+          {IRange[1] + 1, IRange[3] + 1, IRange[5] + 1, IRange[7] + 1,
+           IRange[9] + 1},
+          KOKKOS_LAMBDA(int I, int J, int K, int L, int M, R8 &Accum) {
+             if (I >= LocRange(0) and J >= LocRange(2) and K >= LocRange(4) and
+                 L >= LocRange(6) and M >= LocRange(8)) {
+                size_t LinearAdd = I * LocStrides[0] + J * LocStrides[1] +
+                                   K * LocStrides[2] + L * LocStrides[3] +
+                                   M * LocStrides[4];
+                // convert each to R8 to be sure prod is computed in R8
+                R8 DTmp1 = LocArr1.data()[LinearAdd];
+                R8 DTmp2 = LocArr2.data()[LinearAdd];
+                Accum += DTmp1 * DTmp2;
+             }
+          },
+          LocalSum);
    } // end if onHost
-   //LOG_ERROR("Sum with prod R4 before MPI");
+   // Compute final sum by adding local sums from each MPI task
    R8 GlobalTmp;
-   int Err = MPI_Allreduce(&LocalSum, &GlobalTmp, 1, MPI_DOUBLE, MPI_SUM,
-                           Comm);
+   int Err = MPI_Allreduce(&LocalSum, &GlobalTmp, 1, MPI_DOUBLE, MPI_SUM, Comm);
    if (Err != MPI_SUCCESS)
       ABORT_ERROR("globalSum (R4 array product): Error in MPI_Allreduce");
    R4 GlobalSum = GlobalTmp;
@@ -980,74 +793,33 @@ std::enable_if_t<std::is_same_v<R8, typename Kokkos::View<T>::value_type>, R8>
 globalSum(const Kokkos::View<T, ML, MS> Arr1, // [in] first  array in product
           const Kokkos::View<T, ML, MS> Arr2, // [in] second array in product
           const MPI_Comm Comm,                // [in] MPI Communicator
-          const std::vector<I4> *IndxRange = nullptr   ///< [in] opt index range
+          const std::vector<I4> *IndxRange = nullptr ///< [in] opt index range
 ) {
-   //LOG_ERROR("Sum with prod R8 before checks");
-   int Dim = Arr1.rank;
-   OMEGA_ASSERT(Dim > 0 and Dim < 6,
-      "globalSum (R8 Array product): Arrays with {} dimensions not supported",
-      Dim);
-   OMEGA_ASSERT(Arr2.rank == Dim,
-                "globalSum (R8 Array product): Arrays must have same rank");
-   OMEGA_ASSERT(Arr1.size() == Arr2.size(),
-                "globalSum (R8 Array product): Arrays must have same size");
-   bool IsHost = Kokkos::SpaceAccessibility<MS, Kokkos::HostSpace>::accessible;
-   int Imin{0}, Jmin{0}, Kmin{0}, Lmin{0}, Mmin{0};
-   int Imax{0}, Jmax{0}, Kmax{0}, Lmax{0}, Mmax{0};
-   // Kokkos may pad arrays so extract the actual stride used for storage
-   size_t Strides[5];
-   Arr1.stride(Strides);
-   // Strides returns non-zero stride for last dim so reset
-   for (int IDim = Dim; IDim < 5; ++IDim)
-      Strides[IDim] = 0;
-   // Set index range
-   //LOG_ERROR("Sum with prod R8 before index range");
-   if (IndxRange == nullptr) {
-      if (Dim > 0)
-         Imax = Arr1.extent(0) - 1;
-      if (Dim > 1)
-         Jmax = Arr1.extent(1) - 1;
-      if (Dim > 2)
-         Kmax = Arr1.extent(2) - 1;
-      if (Dim > 3)
-         Lmax = Arr1.extent(3) - 1;
-      if (Dim > 4)
-         Mmax = Arr1.extent(4) - 1;
-   } else {
-      if (Dim > 0) {
-         Imin = (*IndxRange)[0];
-         Imax = (*IndxRange)[1]; // adjust for loop criterion
-      }
-      if (Dim > 1) {
-         Jmin = (*IndxRange)[2];
-         Jmax = (*IndxRange)[3];
-      }
-      if (Dim > 2) {
-         Kmin = (*IndxRange)[4];
-         Kmax = (*IndxRange)[5];
-      }
-      if (Dim > 3) {
-         Lmin = (*IndxRange)[6];
-         Lmax = (*IndxRange)[7];
-      }
-      if (Dim > 4) {
-         Mmin = (*IndxRange)[8];
-         Mmax = (*IndxRange)[9];
-      }
-   }
-   //LOG_ERROR("Sum with prod R8 before loop");
+   // Some error checks
+   OMEGA_REQUIRE(Arr1.rank == Arr2.rank,
+                 "globalSum (R8 Array product): Arrays must have same rank");
+   OMEGA_REQUIRE(Arr1.size() == Arr2.size(),
+                 "globalSum (R8 Array product): Arrays must have same size");
+   // Get array and layout information
+   bool IsHost = isReduceArrayOnHost(Arr1);
+   std::vector<I8> Strides(5);
+   std::vector<I4> IRange(10);
+   getReduceArrayInfo(IRange, Strides, Arr1,
+                      IndxRange); ///< [out] true if host array
+
+   // Compute local sum on host or device
    complex<double> DDTmp; // Sum and residual for DD algorithm
    if (IsHost) {
-      for (int I = Imin; I <= Imax; ++I) {
-         for (int J = Jmin; J <= Jmax; ++J) {
-            for (int K = Kmin; K <= Kmax; ++K) {
-               for (int L = Lmin; L <= Lmax; ++L) {
-                  for (int M = Mmin; M <= Mmax; ++M) {
+      for (I4 I = IRange[0]; I <= IRange[1]; ++I) {
+         for (I4 J = IRange[2]; J <= IRange[3]; ++J) {
+            for (I4 K = IRange[4]; K <= IRange[5]; ++K) {
+               for (I4 L = IRange[6]; L <= IRange[7]; ++L) {
+                  for (I4 M = IRange[8]; M <= IRange[9]; ++M) {
                      size_t LinearAdd = I * Strides[0] + J * Strides[1] +
                                         K * Strides[2] + L * Strides[3] +
                                         M * Strides[4];
-                     R8 ProdTmp = Arr1.data()[LinearAdd] *
-                                  Arr2.data()[LinearAdd];
+                     R8 ProdTmp =
+                         Arr1.data()[LinearAdd] * Arr2.data()[LinearAdd];
                      sumDDLocal(DDTmp, ProdTmp);
                   }
                }
@@ -1055,31 +827,31 @@ globalSum(const Kokkos::View<T, ML, MS> Arr1, // [in] first  array in product
          }
       }
    } else { // on device
-      // TODO: add custom bit-reproducible Kokkos reducer
-      OMEGA_SCOPE(LocStrides, Strides);
-      OMEGA_SCOPE(IMin, Imin);
-      OMEGA_SCOPE(JMin, Jmin);
-      OMEGA_SCOPE(KMin, Kmin);
-      OMEGA_SCOPE(LMin, Lmin);
-      OMEGA_SCOPE(MMin, Mmin);
+      R8 LocalSum = 0;
+      // Transfer some info on device
+      Array1DI4 DevRange("IRange", 10);
+      Array1DI8 DevStrides("Strides", 5);
+      copyReduceInfoToDevice(DevRange, DevStrides, IRange, Strides);
+      OMEGA_SCOPE(LocStrides, DevStrides);
+      OMEGA_SCOPE(LocRange, DevRange);
       OMEGA_SCOPE(LocArr1, Arr1);
       OMEGA_SCOPE(LocArr2, Arr2);
-      R8 LocalSum = 0;
       parallelReduce(
-         {Imax + 1, Jmax + 1, Kmax + 1, Lmax + 1, Mmax + 1},
-         KOKKOS_LAMBDA(int I, int J, int K, int L, int M, R8 &Accum)
-         { if (I >= IMin and J >= JMin and K >= KMin and L >= LMin and
-               M >= MMin) {
-              size_t LinearAdd = I * LocStrides[0] + J * LocStrides[1] +
-                                 K * LocStrides[2] + L * LocStrides[3] +
-                                 M * LocStrides[4];
-              Accum += LocArr1.data()[LinearAdd] * LocArr2.data()[LinearAdd];
-           }
-         },
-         LocalSum);
+          {IRange[1] + 1, IRange[3] + 1, IRange[5] + 1, IRange[7] + 1,
+           IRange[9] + 1},
+          KOKKOS_LAMBDA(int I, int J, int K, int L, int M, R8 &Accum) {
+             if (I >= LocRange(0) and J >= LocRange(2) and K >= LocRange(4) and
+                 L >= LocRange(6) and M >= LocRange(8)) {
+                size_t LinearAdd = I * LocStrides[0] + J * LocStrides[1] +
+                                   K * LocStrides[2] + L * LocStrides[3] +
+                                   M * LocStrides[4];
+                Accum += LocArr1.data()[LinearAdd] * LocArr2.data()[LinearAdd];
+             }
+          },
+          LocalSum);
       DDTmp = complex<double>(LocalSum, 0.0);
    } // end if onHost
-   //LOG_ERROR("Sum with prod R8 before MPI");
+   // Compute final sum by adding local sums from each MPI task
    complex<double> GlobalTmp(0.0, 0.0);
    int Err = MPI_Allreduce(&DDTmp, &GlobalTmp, 1, MPI_C_DOUBLE_COMPLEX,
                            MPI_SUMDD, Comm);
