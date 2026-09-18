@@ -234,14 +234,17 @@ TimeStepper::TimeStepper(
                      Name);
       }
       break;
-   case TimeStepperStopType::OnSignal:
+   case TimeStepperStopType::OnSignal: {
       // Simulation will stop on an external signal so no StopTime
-      // or Duration are needed. Set to a large value or long future time.
+      // or Duration are needed.
+      std::string StopTimeStr = "9999-12-31_00:00:00";
+      // Set Duration and StopTime with long future values for a dummy
+      // EndAlarm
       Duration = TimeInterval(1.e16, TimeUnits::Seconds);
-      StopTime = TimeInstant("9999-12-31_00:00:00");
+      StopTime = TimeInstant(StopTimeStr);
       EndAlarm = std::make_unique<Alarm>(Alarm(AlarmName, StopTime));
       StepClock->attachAlarm(EndAlarm.get());
-      break;
+   } break;
    default:
       ABORT_ERROR("Invalid StopType encountered creating TimeStepper {}", Name);
    }
